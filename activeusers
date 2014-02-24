@@ -1,0 +1,98 @@
+#!/bin/bash
+#===============================================================================
+#         USAGE:  ./activeusers -d for immediate display. This file should be put
+#                   in a cron job to be run daily.
+# 
+#   DESCRIPTION:  Retrieve username and date/time for all ssh, sftp, and scp 
+#                   logins to the server. Display the most recent time of
+#                   login. Gets all server accounts above UID 500. Includes list
+#                   from lastlogin tool.
+# 
+#  REQUIREMENTS:  File must be run as root in order to access /var/log/secure
+#        AUTHOR:   Shepherd, Ammon
+#       COMPANY:  Center for History and New Media (CHNM)
+#       VERSION:  1.5
+#       CREATED:  09/05/2008 10:48:57 PM 
+#       UPDATED:  04/01/2009 15:36:57 PM 
+#===============================================================================
+
+today=`date +'%b %e %r'`
+LOGNAME="/var/log/activeusers.log"
+SECUREFILE="/var/log/secure"
+PASSWDFILE="/etc/passwd"
+
+if [ "$1" = "-d" ]; then
+    if [ "$2" != "" ]; then
+        gawk -F' ' 'BEGIN { format = "%-20s %s\n" 
+                        printf format, "    USERNAME    ", "    LAST LOGIN   "
+                        printf format, "================", "=================" }
+                        { printf format, $1, strftime("%b %d %Y %H:%M",$2)}' $LOGNAME | sed 's/Dec 31 1969 19:00/--- -- ---- --:--/' | grep $2
+    else
+        # display the info in human readable format
+        gawk -F' ' 'BEGIN { format = "%-20s %s\n" 
+                        printf format, "    USERNAME    ", "    LAST LOGIN   "
+                        printf format, "================", "=================" }
+                        { printf format, $1, strftime("%b %d %Y %H:%M",$2)}' $LOGNAME | sed 's/Dec 31 1969 19:00/--- -- ---- --:--/'
+    fi
+    exit 0
+fi
+    # Change the internal field separator to newline so the array is not chunked by spaces
+    # thanks to here: http://macosx.com/forums/unix-x11/302139-bash-shell-script-arrays.html
+IFS=$'\n'
+    # get the list of each users current login time and date and add them to the log
+userlist=( $(cat $SECUREFILE | grep "Accepted" | sed -e 's|  | |g' | cut -d" " -f1,2,3,9 | sort -g -r -k 2 | sort -M -r | sort -k 4 -u) )
+
+for line in ${userlist[@]}; do
+   ((CNT++))
+       # grab just the date
+   dt=( "$(echo $line | sed 's/\(.*\) \(.*\) \(.*\) \(.*\)/\1 \2 \3/')" )
+       # put the date/times into an array and convert them to epoch time
+   timearray[$CNT]=`date +%s -d"$dt"`
+       #grab just the name
+   nm=( $(echo $line | sed 's/\(.* .* .*\) \(.*\)/\2/') )
+       # put the  user names into an array
+   userarray[$CNT]=$nm
+done
+    # unset internal field separator so as not to mess up the rest of the script
+unset IFS
+
+nums=${#userarray[@]}
+count=0
+while [ $count -lt $nums ]; do
+        # loop through the arrays, putting each name and epoch time in a file
+    echo ${userarray[$count]} ${timearray[$count]} >> $LOGNAME
+    ((count++))
+done
+    # get all normal users (ids 500-999 and 1000-9999) from passwd, and set an epoch time of Dec 31, 1969 19:00.
+cat $PASSWDFILE | cut -d: -f 1,3,6 | egrep "[5-9][0-9][0-9]|[1-9][0-9][0-9][0-9]" | cut -d: -f1 | sed -e 's|$| 000001|' >> $LOGNAME
+
+IFS=$'\n'
+    # Get the usernames and last log in dates according to the lastlog command (which only logs ssh connections)
+lastlog=( $(lastlog | grep -v "Username" | grep -v "Never" | sed -e 's|  | |g' -e 's|  | |g' -e 's|  | |g' -e 's|  | |g' | cut -d" " -f1,5,6,7,9) )
+
+for lastNames in ${lastlog[@]}; do
+    ((num++))
+        # get the date
+    lastDate=( "$(echo $lastNames | sed 's|\(.*\) \(.*\) \(.*\) \(.*\) \(.*\)|\2 \3 \4 \5|')" )
+    lastDateArray[$num]=`date +%s -d"$lastDate"`
+        # get the name
+    lastName=( $(echo $lastNames | sed 's|\(.*\) \(.*\) \(.*\) \(.*\) \(.*\)|\1|') )
+    lastNameArray[$num]=$lastName
+done
+unset IFS
+
+lastNum=${#lastNameArray[@]}
+lastCount=0
+while [ $lastCount -lt $lastNum ]; do
+    echo ${lastNameArray[$lastCount]} ${lastDateArray[$lastCount]} >> $LOGNAME
+    ((lastCount++))
+done
+
+    #sort by epoch time. most recent at the top
+sort -g -r -k 2  -o $LOGNAME $LOGNAME
+    #sort by name. return only the first match, which will be most recent
+sort -k1,1 -u -o $LOGNAME $LOGNAME
+    #get rid of the blank lines
+sed -i '/^ *$/d' $LOGNAME
+
+exit 0
